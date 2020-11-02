@@ -499,7 +499,7 @@ class AdvTrainer(BaseTrainer):
                                       start_positions, end_positions, labels, dtype="dis",
                                       global_step=step)
 
-                correct += ((log_prob>0.5)==labels)
+                correct += ((log_prob>0.5)==labels).float().sum()
 
         print("Correct {}".format(correct))
 
