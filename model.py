@@ -70,8 +70,8 @@ class DomainQA(nn.Module):
 
         elif dtype == "dis":
             assert labels is not None
-            dis_loss, _ = self.forward_discriminator(input_ids, token_type_ids, attention_mask, labels)
-            return dis_loss
+            dis_loss, logits = self.forward_discriminator(input_ids, token_type_ids, attention_mask, labels)
+            return dis_loss, logits
 
         else:
             sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)

@@ -437,7 +437,7 @@ class AdvTrainer(BaseTrainer):
                     self.qa_optimizer.zero_grad()
 
                     # update discriminator
-                    dis_loss = self.model(input_ids, seg_ids, input_mask,
+                    dis_loss, _ = self.model(input_ids, seg_ids, input_mask,
                                           start_positions, end_positions, labels, dtype="dis",
                                           global_step=step)
                     dis_loss = dis_loss.mean()
@@ -472,6 +472,7 @@ class AdvTrainer(BaseTrainer):
 
     def test(self):
         correct = 0
+        step = 1
         iter_lst = [self.get_iter(self.features_lst, self.args)]
         for data_loader, sampler in iter_lst:
             for i, batch in enumerate(data_loader, start=1):
@@ -484,13 +485,20 @@ class AdvTrainer(BaseTrainer):
                 input_ids = input_ids[:, :max_len].clone()
                 input_mask = input_mask[:, :max_len].clone()
                 seg_ids = seg_ids[:, :max_len].clone()
+                start_positions = start_positions.clone()
+                end_positions = end_positions.clone()
 
                 if self.args.use_cuda:
                     input_ids = input_ids.cuda(self.args.gpu, non_blocking=True)
                     input_mask = input_mask.cuda(self.args.gpu, non_blocking=True)
                     seg_ids = seg_ids.cuda(self.args.gpu, non_blocking=True)
+                    start_positions = start_positions.cuda(self.args.gpu, non_blocking=True)
+                    end_positions = end_positions.cuda(self.args.gpu, non_blocking=True)
 
-                _, log_prob = self.model.forward_discriminator(input_ids, seg_ids, input_mask, labels)
+                dis_loss, log_prob = self.model(input_ids, seg_ids, input_mask,
+                                      start_positions, end_positions, labels, dtype="dis",
+                                      global_step=step)
+
                 correct += ((log_prob>0.5)==labels)
 
         print("Correct {}".format(correct))
