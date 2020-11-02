@@ -476,7 +476,11 @@ class AdvTrainer(BaseTrainer):
         iter_lst = [self.get_iter(self.features_lst, self.args)]
         len = 0
         for data_loader, sampler in iter_lst:
-            for i, batch in range(10): #(enumerate(data_loader, start=1))
+            for i, batch in (enumerate(data_loader, start=1)):
+                if i > 10:
+                    break
+                else:
+                    print(i)
                 input_ids, input_mask, seg_ids, start_positions, end_positions, labels = batch
 
                 # remove unnecessary pad token
