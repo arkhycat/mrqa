@@ -474,8 +474,9 @@ class AdvTrainer(BaseTrainer):
         correct = 0
         step = 1
         iter_lst = [self.get_iter(self.features_lst, self.args)]
+        len = 0
         for data_loader, sampler in iter_lst:
-            for i, batch in enumerate(data_loader, start=1):
+            for i, batch in range(10): #(enumerate(data_loader, start=1))
                 input_ids, input_mask, seg_ids, start_positions, end_positions, labels = batch
 
                 # remove unnecessary pad token
@@ -500,10 +501,11 @@ class AdvTrainer(BaseTrainer):
                                       start_positions, end_positions, labels, dtype="dis",
                                       global_step=step)
 
-                print(log_prob.shape, labels.shape)
+                #print(log_prob.shape, labels.shape)
+                len += labels.shape[0]
                 correct += ((log_prob.argmax(dim=1).detach().cpu())==labels.detach().cpu()).float().sum()
 
-        print("Correct {}".format(correct))
+        print("Accuracy {}".format(correct/len))
 
 
 
