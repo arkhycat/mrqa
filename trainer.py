@@ -308,6 +308,9 @@ class BaseTrainer(object):
 
         return result_dict
 
+    def test(self):
+        pass
+
     @staticmethod
     def cal_running_avg_loss(loss, running_avg_loss, decay=0.99):
         if running_avg_loss == 0:
@@ -466,3 +469,12 @@ class AdvTrainer(BaseTrainer):
                 result_dict = self.evaluate_model(epoch)
                 for dev_file, f1 in result_dict.items():
                     print("GPU/CPU {} evaluated {}: {:.2f}".format(self.args.gpu, dev_file, f1), end="\n")
+
+    def test(self):
+        print("!!!!!!!!!!!!!!!!")
+        #iter_lst = [self.get_iter(self.features_lst, self.args)]
+        #self.model.test()
+        #for data_loader, sampler in iter_lst:
+
+
+

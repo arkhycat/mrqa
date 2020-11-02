@@ -20,6 +20,7 @@ def worker(gpu, ngpus_per_node, args):
     model.make_model_env(gpu, ngpus_per_node)
     model.make_run_env()
     model.train()
+    model.test()
 
 
 def main(args):
