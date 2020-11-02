@@ -70,7 +70,7 @@ class DomainQA(nn.Module):
 
         elif dtype == "dis":
             assert labels is not None
-            dis_loss = self.forward_discriminator(input_ids, token_type_ids, attention_mask, labels)
+            dis_loss, _ = self.forward_discriminator(input_ids, token_type_ids, attention_mask, labels)
             return dis_loss
 
         else:
@@ -134,7 +134,7 @@ class DomainQA(nn.Module):
         criterion = nn.NLLLoss()
         loss = criterion(log_prob, labels)
 
-        return loss
+        return loss, log_prob
 
     def get_sep_embedding(self, input_ids, sequence_output):
         batch_size = input_ids.size(0)

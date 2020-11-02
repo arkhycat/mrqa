@@ -471,10 +471,32 @@ class AdvTrainer(BaseTrainer):
                     print("GPU/CPU {} evaluated {}: {:.2f}".format(self.args.gpu, dev_file, f1), end="\n")
 
     def test(self):
-        print("!!!!!!!!!!!!!!!!")
-        #iter_lst = [self.get_iter(self.features_lst, self.args)]
-        #self.model.test()
-        #for data_loader, sampler in iter_lst:
+        correct = 0
+        iter_lst = [self.get_iter(self.features_lst, self.args)]
+        self.model.test()
+        for data_loader, sampler in iter_lst:
+            for i, batch in enumerate(data_loader, start=1):
+                input_ids, input_mask, seg_ids, start_positions, end_positions, labels = batch
+
+                # remove unnecessary pad token
+                seq_len = torch.sum(torch.sign(input_ids), 1)
+                max_len = torch.max(seq_len)
+
+                input_ids = input_ids[:, :max_len].clone()
+                input_mask = input_mask[:, :max_len].clone()
+                seg_ids = seg_ids[:, :max_len].clone()
+
+                if self.args.use_cuda:
+                    input_ids = input_ids.cuda(self.args.gpu, non_blocking=True)
+                    input_mask = input_mask.cuda(self.args.gpu, non_blocking=True)
+                    seg_ids = seg_ids.cuda(self.args.gpu, non_blocking=True)
+
+                _, log_prob = self.model.forward_discriminator(input_ids, seg_ids, input_mask, labels)
+                correct += ((log_prob>0.5)==labels)
+
+        print("Correct {}".format(correct))
+
+
 
 
 
