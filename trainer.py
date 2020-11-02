@@ -495,11 +495,13 @@ class AdvTrainer(BaseTrainer):
                     start_positions = start_positions.cuda(self.args.gpu, non_blocking=True)
                     end_positions = end_positions.cuda(self.args.gpu, non_blocking=True)
 
+
                 dis_loss, log_prob = self.model(input_ids, seg_ids, input_mask,
                                       start_positions, end_positions, labels, dtype="dis",
                                       global_step=step)
 
-                correct += ((log_prob>0.5)==labels).float().sum()
+                print(log_prob.shape, labels.shape)
+                correct += ((log_prob.argmax(dim=1))==labels).float().sum()
 
         print("Correct {}".format(correct))
 
