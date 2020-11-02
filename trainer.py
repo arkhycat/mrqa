@@ -473,7 +473,6 @@ class AdvTrainer(BaseTrainer):
     def test(self):
         correct = 0
         iter_lst = [self.get_iter(self.features_lst, self.args)]
-        self.model.test()
         for data_loader, sampler in iter_lst:
             for i, batch in enumerate(data_loader, start=1):
                 input_ids, input_mask, seg_ids, start_positions, end_positions, labels = batch
