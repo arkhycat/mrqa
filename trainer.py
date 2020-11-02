@@ -501,7 +501,7 @@ class AdvTrainer(BaseTrainer):
                                       global_step=step)
 
                 print(log_prob.shape, labels.shape)
-                correct += ((log_prob.argmax(dim=1))==labels.detach()).float().sum()
+                correct += ((log_prob.argmax(dim=1).detach().cpu())==labels.detach().cpu()).float().sum()
 
         print("Correct {}".format(correct))
 
