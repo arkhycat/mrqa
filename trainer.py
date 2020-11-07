@@ -471,7 +471,7 @@ class AdvTrainer(BaseTrainer):
                     print("GPU/CPU {} evaluated {}: {:.2f}".format(self.args.gpu, dev_file, f1), end="\n")
 
     def test(self):
-        correct = 0
+        correct = torch.zeros((6)).float()
         step = 1
         iter_lst = [self.get_iter(self.features_lst, self.args)]
         len = 0
@@ -507,8 +507,12 @@ class AdvTrainer(BaseTrainer):
 
                 #print(log_prob.shape, labels.shape)
                 len += labels.shape[0]
-                correct += ((log_prob.argmax(dim=1).detach().cpu())==labels.detach().cpu()).float().sum()
-                print(((log_prob.argmax(dim=1).detach().cpu())==labels.detach().cpu()).float().shape)
+                #correct += ((log_prob.argmax(dim=1).detach().cpu())==labels.detach().cpu()).float().sum()
+                onehot_labels = torch.nn.functional.one_hot(labels).float()
+                onehot_pred = torch.nn.functional.one_hot((log_prob.argmax(dim=1).detach().cpu())).float()
+                print(onehot_pred)
+                print(onehot_labels)
+                correct += (onehot_pred==onehot_labels).sum(dim=0)
 
         print("Accuracy {}".format(correct/len))
 
