@@ -485,7 +485,7 @@ class AdvTrainer(BaseTrainer):
                     fp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 0)).sum(dim=0).float()
                     fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
                     if i % 1000 == 0:
-                        writer.add_scalars("Accuracy", summary_map(self.num_to_name, correct_total / data_len), i)
+                        writer.add_scalars("Accuracy", correct_total / data_len, i)
                         writer.add_scalars("Accuracy_by_class", summary_map(self.num_to_name, correct / data_len), i)
                         writer.add_scalars("True_positives", summary_map(self.num_to_name, tp / data_len), i)
                         writer.add_scalars("False_negatives", summary_map(self.num_to_name, fn / data_len), i)
@@ -562,7 +562,7 @@ class AdvTrainer(BaseTrainer):
 
                 msg = "{}/{} {} - ETA : {}" .format(i, num_batches, progress_bar(i, num_batches), eta(start, i, num_batches))
                 if i % 1000 == 0:
-                    writer.add_scalars("Accuracy", summary_map(self.num_to_name, correct_total / data_len), i)
+                    writer.add_scalars("Accuracy", correct_total / data_len, i)
                     writer.add_scalars("Accuracy_by_class", summary_map(self.num_to_name, correct / data_len), i)
                     writer.add_scalars("True_positives", summary_map(self.num_to_name, tp / data_len), i)
                     writer.add_scalars("False_negatives", summary_map(self.num_to_name, fn / data_len), i)
