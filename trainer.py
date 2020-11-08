@@ -21,8 +21,10 @@ from pytorch_pretrained_bert.optimization import BertAdam
 from eval import eval_qa
 from iterator import read_squad_examples, convert_examples_to_features
 from model import DomainQA
-from utils import eta, progress_bar
+from utils import eta, progress_bar, summary_map
 
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter()
 
 def get_opt(param_optimizer, num_train_optimization_steps, args):
     """
@@ -66,7 +68,7 @@ class BaseTrainer(object):
                                                        do_lower_case=args.do_lower_case)
         if args.debug:
             print("Debugging mode on.")
-        self.features_lst = self.get_features(self.args.train_folder, self.args.debug)
+        self.features_lst, self.num_to_name = self.get_features(self.args.train_folder, self.args.debug)
 
     def make_model_env(self, gpu, ngpus_per_node):
         if self.args.distributed:
@@ -132,7 +134,8 @@ class BaseTrainer(object):
         features_lst = []
 
         files = [f for f in os.listdir(train_folder) if f.endswith(".gz")]
-        print("Number of data set:{}".format(len(files)))
+        names = [f.split(".")[0] for f in files]
+        print("Number of data sets:{}".format(len(files)))
         for filename in files:
             data_name = filename.split(".")[0]
             # Check whether pkl file already exists
@@ -166,7 +169,7 @@ class BaseTrainer(object):
                         print("Saving {} file from pkl file...".format(data_name))
                         pickle.dump(train_features, pkl_f)
 
-        return features_lst
+        return features_lst, names
 
     def get_iter(self, features_lst, args):
         all_input_ids = []
@@ -176,6 +179,7 @@ class BaseTrainer(object):
         all_end_positions = []
         all_labels = []
 
+        print("Dataset sizes")
         for i, train_features in enumerate(features_lst):
             all_input_ids.append(torch.tensor([f.input_ids for f in train_features], dtype=torch.long))
             all_input_mask.append(torch.tensor([f.input_mask for f in train_features], dtype=torch.long))
@@ -187,6 +191,7 @@ class BaseTrainer(object):
             all_start_positions.append(start_positions)
             all_end_positions.append(end_positions)
             all_labels.append(i * torch.ones_like(start_positions))
+            print(i, start_positions.shape)
 
         all_input_ids = torch.cat(all_input_ids, dim=0)
         all_input_mask = torch.cat(all_input_mask, dim=0)
@@ -401,6 +406,7 @@ class AdvTrainer(BaseTrainer):
         tp = torch.zeros((6), dtype=torch.float)
         fp = torch.zeros((6), dtype=torch.float)
         fn = torch.zeros((6), dtype=torch.float)
+        correct_total = 0
 
         for epoch in range(self.args.start_epoch, self.args.start_epoch + self.args.epochs):
             start = time.time()
@@ -463,26 +469,41 @@ class AdvTrainer(BaseTrainer):
                         .format(batch_step, num_batches, progress_bar(batch_step, num_batches),
                                 eta(start, batch_step, num_batches),
                                 avg_qa_loss, avg_dis_loss)
+
+                    writer.add_scalar("QA loss", avg_qa_loss)
+                    writer.add_scalar("Discriminator loss", avg_dis_loss)
+
                     print(msg, end="\r")
 
                     data_len += labels.shape[0]
                     onehot_labels = torch.nn.functional.one_hot(labels, num_classes=6).float()
                     onehot_pred = torch.nn.functional.one_hot((log_prob.argmax(dim=1).detach().cpu()),
                                                               num_classes=6).float()
+                    correct_total += ((log_prob.argmax(dim=1).detach().cpu())==labels.detach().cpu()).float().sum()
                     correct += (onehot_pred == onehot_labels).sum(dim=0).float()
                     tp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 1)).sum(dim=0).float()
                     fp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 0)).sum(dim=0).float()
                     fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
                     if i % 1000 == 0:
+                        writer.add_scalars("Accuracy", summary_map(self.num_to_name, correct_total / data_len))
+                        writer.add_scalars("Accuracy by class", summary_map(self.num_to_name, correct / data_len))
+                        writer.add_scalars("True positives", summary_map(self.num_to_name, tp / data_len))
+                        writer.add_scalars("False negatives", summary_map(self.num_to_name, fn / data_len))
+                        writer.add_scalars("False positives", summary_map(self.num_to_name, fp / data_len))
                         print(
-                            "Accuracy {}, tp {}, fp {}, fn {}".format(correct / data_len, tp / data_len, fp / data_len,
-                                                                      fn / data_len), end="\n")
+                            "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
+                                                                                         correct / data_len,
+                                                                                         tp / data_len, fp / data_len,
+                                                                                         fn / data_len), end="\n")
 
             print("[GPU Num: {}, Epoch: {}, Final QA loss: {:.4f}, Final DIS loss: {:.4f}]"
                   .format(self.args.gpu, epoch, avg_qa_loss, avg_dis_loss))
 
-            print("Accuracy {}, tp {}, fp {}, fn {}".format(correct / data_len, tp / data_len, fp / data_len,
-                                                            fn / data_len))
+            print(
+                "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
+                                                                             correct / data_len,
+                                                                             tp / data_len, fp / data_len,
+                                                                             fn / data_len), end="\n")
             # save model
             if not self.args.distributed or self.args.rank == 0:
                 self.save_model(epoch, avg_qa_loss)
@@ -497,6 +518,7 @@ class AdvTrainer(BaseTrainer):
         tp = torch.zeros((6), dtype=torch.float)
         fp = torch.zeros((6), dtype=torch.float)
         fn = torch.zeros((6), dtype=torch.float)
+        correct_total = 0
         step = 1
         data_len = 0
         iter_lst = [self.get_iter(self.features_lst, self.args)]
@@ -532,18 +554,33 @@ class AdvTrainer(BaseTrainer):
                 data_len += labels.shape[0]
                 onehot_labels = torch.nn.functional.one_hot(labels, num_classes=6).float()
                 onehot_pred = torch.nn.functional.one_hot((log_prob.argmax(dim=1).detach().cpu()), num_classes=6).float()
+                correct_total += ((log_prob.argmax(dim=1).detach().cpu()) == labels.detach().cpu()).float().sum()
                 correct += (onehot_pred == onehot_labels).sum(dim=0).float()
                 tp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 1)).sum(dim=0).float()
                 fp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 0)).sum(dim=0).float()
                 fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
+
                 msg = "{}/{} {} - ETA : {}" .format(i, num_batches, progress_bar(i, num_batches), eta(start, i, num_batches))
-                if i%1000 == 0:
-                    print("Accuracy {}, tp {}, fp {}, fn {}".format(correct / data_len, tp / data_len, fp / data_len, fn / data_len))
+                if i % 1000 == 0:
+                    writer.add_scalars("Accuracy", summary_map(self.num_to_name, correct_total / data_len))
+                    writer.add_scalars("Accuracy by class", summary_map(self.num_to_name, correct / data_len))
+                    writer.add_scalars("True positives", summary_map(self.num_to_name, tp / data_len))
+                    writer.add_scalars("False negatives", summary_map(self.num_to_name, fn / data_len))
+                    writer.add_scalars("False positives", summary_map(self.num_to_name, fp / data_len))
+                    print(
+                        "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
+                                                                                     correct / data_len,
+                                                                                     tp / data_len, fp / data_len,
+                                                                                     fn / data_len), end="\n")
                     print(msg)
                 else:
                     print(msg, end="\r")
 
-        print("Accuracy {}, tp {}, fp {}, fn {}".format(correct/data_len, tp/data_len, fp/data_len, fn/data_len))
+        print(
+            "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
+                                                                         correct / data_len,
+                                                                         tp / data_len, fp / data_len,
+                                                                         fn / data_len), end="\n")
 
 
 
