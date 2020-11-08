@@ -396,10 +396,17 @@ class AdvTrainer(BaseTrainer):
         avg_dis_loss = 0
         iter_lst = [self.get_iter(self.features_lst, self.args)]
         num_batches = sum([len(iterator[0]) for iterator in iter_lst])
+
+        correct = torch.zeros((6), dtype=torch.float)
+        tp = torch.zeros((6), dtype=torch.float)
+        fp = torch.zeros((6), dtype=torch.float)
+        fn = torch.zeros((6), dtype=torch.float)
+
         for epoch in range(self.args.start_epoch, self.args.start_epoch + self.args.epochs):
             start = time.time()
             self.model.train()
             batch_step = 1
+            data_len = 0
             for data_loader, sampler in iter_lst:
                 if self.args.distributed:
                     sampler.set_epoch(epoch)
@@ -437,7 +444,7 @@ class AdvTrainer(BaseTrainer):
                     self.qa_optimizer.zero_grad()
 
                     # update discriminator
-                    dis_loss, _ = self.model(input_ids, seg_ids, input_mask,
+                    dis_loss, log_prob = self.model(input_ids, seg_ids, input_mask,
                                           start_positions, end_positions, labels, dtype="dis",
                                           global_step=step)
                     dis_loss = dis_loss.mean()
@@ -458,9 +465,24 @@ class AdvTrainer(BaseTrainer):
                                 avg_qa_loss, avg_dis_loss)
                     print(msg, end="\r")
 
+                    data_len += labels.shape[0]
+                    onehot_labels = torch.nn.functional.one_hot(labels, num_classes=6).float()
+                    onehot_pred = torch.nn.functional.one_hot((log_prob.argmax(dim=1).detach().cpu()),
+                                                              num_classes=6).float()
+                    correct += (onehot_pred == onehot_labels).sum(dim=0).float()
+                    tp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 1)).sum(dim=0).float()
+                    fp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 0)).sum(dim=0).float()
+                    fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
+                    if i % 1000 == 0:
+                        print(
+                            "Accuracy {}, tp {}, fp {}, fn {}".format(correct / data_len, tp / data_len, fp / data_len,
+                                                                      fn / data_len), end="\n")
+
             print("[GPU Num: {}, Epoch: {}, Final QA loss: {:.4f}, Final DIS loss: {:.4f}]"
                   .format(self.args.gpu, epoch, avg_qa_loss, avg_dis_loss))
 
+            print("Accuracy {}, tp {}, fp {}, fn {}".format(correct / data_len, tp / data_len, fp / data_len,
+                                                            fn / data_len))
             # save model
             if not self.args.distributed or self.args.rank == 0:
                 self.save_model(epoch, avg_qa_loss)
@@ -471,16 +493,17 @@ class AdvTrainer(BaseTrainer):
                     print("GPU/CPU {} evaluated {}: {:.2f}".format(self.args.gpu, dev_file, f1), end="\n")
 
     def test(self):
-        correct = torch.zeros((6)).float()
+        correct = torch.zeros((6), dtype=torch.float)
+        tp = torch.zeros((6), dtype=torch.float)
+        fp = torch.zeros((6), dtype=torch.float)
+        fn = torch.zeros((6), dtype=torch.float)
         step = 1
+        data_len = 0
         iter_lst = [self.get_iter(self.features_lst, self.args)]
-        len = 0
+        num_batches = sum([len(iterator[0]) for iterator in iter_lst])
+        start = time.time()
         for data_loader, sampler in iter_lst:
-            for i, batch in (enumerate(data_loader, start=1)):
-                if i > 10:
-                    break
-                else:
-                    print(i)
+            for i, batch in enumerate(data_loader, start=1):
                 input_ids, input_mask, seg_ids, start_positions, end_positions, labels = batch
 
                 # remove unnecessary pad token
@@ -506,15 +529,21 @@ class AdvTrainer(BaseTrainer):
                                       global_step=step)
 
                 #print(log_prob.shape, labels.shape)
-                len += labels.shape[0]
-                #correct += ((log_prob.argmax(dim=1).detach().cpu())==labels.detach().cpu()).float().sum()
-                onehot_labels = torch.nn.functional.one_hot(labels).float()
-                onehot_pred = torch.nn.functional.one_hot((log_prob.argmax(dim=1).detach().cpu())).float()
-                print(onehot_pred)
-                print(onehot_labels)
-                correct += (onehot_pred==onehot_labels).sum(dim=0)
+                data_len += labels.shape[0]
+                onehot_labels = torch.nn.functional.one_hot(labels, num_classes=6).float()
+                onehot_pred = torch.nn.functional.one_hot((log_prob.argmax(dim=1).detach().cpu()), num_classes=6).float()
+                correct += (onehot_pred == onehot_labels).sum(dim=0).float()
+                tp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 1)).sum(dim=0).float()
+                fp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 0)).sum(dim=0).float()
+                fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
+                msg = "{}/{} {} - ETA : {}" .format(i, num_batches, progress_bar(i, num_batches), eta(start, i, num_batches))
+                if i%1000 == 0:
+                    print("Accuracy {}, tp {}, fp {}, fn {}".format(correct / data_len, tp / data_len, fp / data_len, fn / data_len))
+                    print(msg)
+                else:
+                    print(msg, end="\r")
 
-        print("Accuracy {}".format(correct/len))
+        print("Accuracy {}, tp {}, fp {}, fn {}".format(correct/data_len, tp/data_len, fp/data_len, fn/data_len))
 
 
 
