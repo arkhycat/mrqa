@@ -561,20 +561,7 @@ class AdvTrainer(BaseTrainer):
                 fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
 
                 msg = "{}/{} {} - ETA : {}" .format(i, num_batches, progress_bar(i, num_batches), eta(start, i, num_batches))
-                writer.add_scalar("Total/Accuracy", correct_total / data_len, i)
-                writer.add_scalars("By_class/Accuracy_by_class", summary_map(self.num_to_name, correct / data_len), i)
-                writer.add_scalars("By_class/True_positives", summary_map(self.num_to_name, tp / data_len), i)
-                writer.add_scalars("By_class/False_negatives", summary_map(self.num_to_name, fn / data_len), i)
-                writer.add_scalars("By_class/False_positives", summary_map(self.num_to_name, fp / data_len), i)
-                if i % 1000 == 0:
-                    print(
-                        "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
-                                                                                     correct / data_len,
-                                                                                     tp / data_len, fp / data_len,
-                                                                                     fn / data_len), end="\n")
-                    print(msg)
-                else:
-                    print(msg, end="\r")
+                print(msg, end="\r")
 
         print(
             "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
