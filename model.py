@@ -123,7 +123,8 @@ class DomainQA(nn.Module):
 
     def forward_discriminator(self, input_ids, token_type_ids, attention_mask, labels):
         with torch.no_grad():
-            sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+            sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+
             cls_embedding = sequence_output[:, 0]  # [b, d] : [CLS] representation
             if self.concat:
                 sep_embedding = self.get_sep_embedding(input_ids, sequence_output)
@@ -131,6 +132,9 @@ class DomainQA(nn.Module):
             else:
                 hidden = cls_embedding
         log_prob = self.discriminator(hidden.detach())
+        #print(pooled_output.shape)
+        #print(sequence_output.shape)
+        #log_prob = self.discriminator(pooled_output)
         criterion = nn.NLLLoss()
         loss = criterion(log_prob, labels)
 
