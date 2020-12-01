@@ -69,6 +69,9 @@ class BaseTrainer(object):
         if args.debug:
             print("Debugging mode on.")
         self.features_lst, self.num_to_name = self.get_features(self.args.train_folder, self.args.debug)
+        train_split = args.train_split
+        self.train_features_lst = [ftrs[:int(train_split*(len(ftrs)))] for ftrs in self.features_lst]
+        self.test_features_lst = [ftrs[int(train_split*(len(ftrs))):] for ftrs in self.features_lst]
 
     def make_model_env(self, gpu, ngpus_per_node):
         if self.args.distributed:
@@ -90,8 +93,8 @@ class BaseTrainer(object):
             print("Loading model from ", self.args.load_model)
             self.model.load_state_dict(torch.load(self.args.load_model, map_location=lambda storage, loc: storage))
 
-        max_len = max([len(f) for f in self.features_lst])
-        num_train_optimization_steps = math.ceil(max_len / self.args.batch_size) * self.args.epochs * len(self.features_lst)
+        max_len = max([len(f) for f in self.train_features_lst])
+        num_train_optimization_steps = math.ceil(max_len / self.args.batch_size) * self.args.epochs * len(self.train_features_lst)
 
         if self.args.freeze_bert:
             for param in self.model.bert.parameters():
@@ -232,7 +235,7 @@ class BaseTrainer(object):
         step = 1
         avg_loss = 0
         global_step = 1
-        iter_lst = [self.get_iter(self.features_lst, self.args)]
+        iter_lst = [self.get_iter(self.train_features_lst, self.args)]
         num_batches = sum([len(iterator[0]) for iterator in iter_lst])
         for epoch in range(self.args.start_epoch, self.args.start_epoch + self.args.epochs):
             self.model.train()
@@ -302,6 +305,7 @@ class BaseTrainer(object):
         fw = open(result_file, "a")
         result_dict = dict()
         for dev_file in self.dev_files:
+            print(dev_file)
             file_name = dev_file.split(".")[0]
             prediction_file = os.path.join(self.args.result_dir, "epoch_{}_{}.json".format(epoch, file_name))
             file_path = os.path.join(self.args.dev_folder, dev_file)
@@ -373,8 +377,8 @@ class AdvTrainer(BaseTrainer):
             for param in self.model.bert.parameters():
                 param.requires_grad = False
 
-        max_len = max([len(f) for f in self.features_lst])
-        num_train_optimization_steps = math.ceil(max_len / self.args.batch_size) * self.args.epochs * len(self.features_lst)
+        max_len = max([len(f) for f in self.train_features_lst])
+        num_train_optimization_steps = math.ceil(max_len / self.args.batch_size) * self.args.epochs * len(self.train_features_lst)
 
         qa_params = list(self.model.bert.named_parameters()) + list(self.model.qa_outputs.named_parameters())
         dis_params = list(self.model.discriminator.named_parameters())
@@ -399,7 +403,7 @@ class AdvTrainer(BaseTrainer):
         step = 1
         avg_qa_loss = 0
         avg_dis_loss = 0
-        iter_lst = [self.get_iter(self.features_lst, self.args)]
+        iter_lst = [self.get_iter(self.train_features_lst, self.args)]
         num_batches = sum([len(iterator[0]) for iterator in iter_lst])
 
         correct = torch.zeros((6), dtype=torch.float)
@@ -444,10 +448,11 @@ class AdvTrainer(BaseTrainer):
                     qa_loss = qa_loss.mean()
                     qa_loss.backward()
 
-                    # update qa model
-                    avg_qa_loss = self.cal_running_avg_loss(qa_loss.item(), avg_qa_loss)
-                    self.qa_optimizer.step()
-                    self.qa_optimizer.zero_grad()
+                    if self.args.train_qa:
+                        # update qa model
+                        avg_qa_loss = self.cal_running_avg_loss(qa_loss.item(), avg_qa_loss)
+                        self.qa_optimizer.step()
+                        self.qa_optimizer.zero_grad()
 
                     # update discriminator
                     dis_loss, log_prob = self.model(input_ids, seg_ids, input_mask,
@@ -459,19 +464,45 @@ class AdvTrainer(BaseTrainer):
                     self.dis_optimizer.step()
                     self.dis_optimizer.zero_grad()
                     step += 1
-                    if epoch != 0 and i % 2000 == 0:
+                    if i % 2000 == 0:
                         result_dict = self.evaluate_model(i)
                         for dev_file, f1 in result_dict.items():
                             print("GPU/CPU {} evaluated {}: {:.2f}".format(self.args.gpu, dev_file, f1), end="\n")
+                        self.test(step)
+
+                        writer.add_scalar("Train/Total_accuracy", correct_total / data_len, i)
+                        writer.add_scalars("Train/By_class_accuracy", summary_map(self.num_to_name, correct / data_len),
+                                           i)
+                        writer.add_scalars("Train/By_class_true_positives",
+                                           summary_map(self.num_to_name, tp / data_len), i)
+                        writer.add_scalars("Train/By_class_false_negatives",
+                                           summary_map(self.num_to_name, fn / data_len), i)
+                        writer.add_scalars("Train/By_class_false_positives",
+                                           summary_map(self.num_to_name, fp / data_len), i)
+
+                        correct = torch.zeros((6), dtype=torch.float)
+                        tp = torch.zeros((6), dtype=torch.float)
+                        fp = torch.zeros((6), dtype=torch.float)
+                        fn = torch.zeros((6), dtype=torch.float)
+                        correct_total = 0
+
 
                     batch_step += 1
-                    msg = "{}/{} {} - ETA : {} - QA loss: {:.4f}, DIS loss: {:.4f}" \
-                        .format(batch_step, num_batches, progress_bar(batch_step, num_batches),
-                                eta(start, batch_step, num_batches),
-                                avg_qa_loss, avg_dis_loss)
 
-                    writer.add_scalar("Total/QA", avg_qa_loss, i)
-                    writer.add_scalar("Total/Discriminator", avg_dis_loss, i)
+                    msg = ""
+                    if self.args.train_qa:
+                        msg = "Train {}/{} {} - ETA : {} - QA loss: {:.4f}, DIS loss: {:.4f}" \
+                            .format(batch_step, num_batches, progress_bar(batch_step, num_batches),
+                                    eta(start, batch_step, num_batches),
+                                    avg_qa_loss, avg_dis_loss)
+                    else:
+                        msg = "Train {}/{} {} - ETA : {} - DIS loss: {:.4f}" \
+                            .format(batch_step, num_batches, progress_bar(batch_step, num_batches),
+                                    eta(start, batch_step, num_batches),
+                                    avg_dis_loss)
+
+                    writer.add_scalar("Loss/QA", avg_qa_loss, i)
+                    writer.add_scalar("Loss/Discriminator", avg_dis_loss, i)
 
                     print(msg, end="\r")
 
@@ -484,11 +515,6 @@ class AdvTrainer(BaseTrainer):
                     tp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 1)).sum(dim=0).float()
                     fp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 0)).sum(dim=0).float()
                     fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
-                    writer.add_scalar("Total/Accuracy", correct_total / data_len, i)
-                    writer.add_scalars("By_class/Accuracy", summary_map(self.num_to_name, correct / data_len), i)
-                    writer.add_scalars("By_class/True_positives", summary_map(self.num_to_name, tp / data_len), i)
-                    writer.add_scalars("By_class/False_negatives", summary_map(self.num_to_name, fn / data_len), i)
-                    writer.add_scalars("By_class/False_positives", summary_map(self.num_to_name, fp / data_len), i)
                     if i % 1000 == 0:
                         print(
                             "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
@@ -500,7 +526,7 @@ class AdvTrainer(BaseTrainer):
                   .format(self.args.gpu, epoch, avg_qa_loss, avg_dis_loss))
 
             print(
-                "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
+                "Train accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
                                                                              correct / data_len,
                                                                              tp / data_len, fp / data_len,
                                                                              fn / data_len), end="\n")
@@ -513,7 +539,7 @@ class AdvTrainer(BaseTrainer):
                 for dev_file, f1 in result_dict.items():
                     print("GPU/CPU {} evaluated {}: {:.2f}".format(self.args.gpu, dev_file, f1), end="\n")
 
-    def test(self):
+    def test(self, e=1):
         correct = torch.zeros((6), dtype=torch.float)
         tp = torch.zeros((6), dtype=torch.float)
         fp = torch.zeros((6), dtype=torch.float)
@@ -521,55 +547,61 @@ class AdvTrainer(BaseTrainer):
         correct_total = 0
         step = 1
         data_len = 0
-        iter_lst = [self.get_iter(self.features_lst, self.args)]
+        iter_lst = [self.get_iter(self.test_features_lst, self.args)]
         num_batches = sum([len(iterator[0]) for iterator in iter_lst])
         start = time.time()
-        for data_loader, sampler in iter_lst:
-            for i, batch in enumerate(data_loader, start=1):
-                input_ids, input_mask, seg_ids, start_positions, end_positions, labels = batch
+        with torch.no_grad():
+            for data_loader, sampler in iter_lst:
+                for i, batch in enumerate(data_loader, start=1):
+                    input_ids, input_mask, seg_ids, start_positions, end_positions, labels = batch
 
-                # remove unnecessary pad token
-                seq_len = torch.sum(torch.sign(input_ids), 1)
-                max_len = torch.max(seq_len)
+                    # remove unnecessary pad token
+                    seq_len = torch.sum(torch.sign(input_ids), 1)
+                    max_len = torch.max(seq_len)
 
-                input_ids = input_ids[:, :max_len].clone()
-                input_mask = input_mask[:, :max_len].clone()
-                seg_ids = seg_ids[:, :max_len].clone()
-                start_positions = start_positions.clone()
-                end_positions = end_positions.clone()
+                    input_ids = input_ids[:, :max_len].clone()
+                    input_mask = input_mask[:, :max_len].clone()
+                    seg_ids = seg_ids[:, :max_len].clone()
+                    start_positions = start_positions.clone()
+                    end_positions = end_positions.clone()
 
-                if self.args.use_cuda:
-                    input_ids = input_ids.cuda(self.args.gpu, non_blocking=True)
-                    input_mask = input_mask.cuda(self.args.gpu, non_blocking=True)
-                    seg_ids = seg_ids.cuda(self.args.gpu, non_blocking=True)
-                    start_positions = start_positions.cuda(self.args.gpu, non_blocking=True)
-                    end_positions = end_positions.cuda(self.args.gpu, non_blocking=True)
+                    if self.args.use_cuda:
+                        input_ids = input_ids.cuda(self.args.gpu, non_blocking=True)
+                        input_mask = input_mask.cuda(self.args.gpu, non_blocking=True)
+                        seg_ids = seg_ids.cuda(self.args.gpu, non_blocking=True)
+                        start_positions = start_positions.cuda(self.args.gpu, non_blocking=True)
+                        end_positions = end_positions.cuda(self.args.gpu, non_blocking=True)
 
 
-                dis_loss, log_prob = self.model(input_ids, seg_ids, input_mask,
-                                      start_positions, end_positions, labels, dtype="dis",
-                                      global_step=step)
+                    dis_loss, log_prob = self.model(input_ids, seg_ids, input_mask,
+                                          start_positions, end_positions, labels, dtype="dis",
+                                          global_step=step)
 
-                #print(log_prob.shape, labels.shape)
-                data_len += labels.shape[0]
-                onehot_labels = torch.nn.functional.one_hot(labels, num_classes=6).float()
-                onehot_pred = torch.nn.functional.one_hot((log_prob.argmax(dim=1).detach().cpu()), num_classes=6).float()
-                correct_total += ((log_prob.argmax(dim=1).detach().cpu()) == labels.detach().cpu()).float().sum()
-                correct += (onehot_pred == onehot_labels).sum(dim=0).float()
-                tp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 1)).sum(dim=0).float()
-                fp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 0)).sum(dim=0).float()
-                fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
+                    #print(log_prob.shape, labels.shape)
+                    data_len += labels.shape[0]
+                    onehot_labels = torch.nn.functional.one_hot(labels, num_classes=6).float()
+                    onehot_pred = torch.nn.functional.one_hot((log_prob.argmax(dim=1).detach().cpu()), num_classes=6).float()
+                    correct_total += ((log_prob.argmax(dim=1).detach().cpu()) == labels.detach().cpu()).float().sum()
+                    correct += (onehot_pred == onehot_labels).sum(dim=0).float()
+                    tp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 1)).sum(dim=0).float()
+                    fp += ((onehot_pred.float() == 1) & (onehot_labels.float() == 0)).sum(dim=0).float()
+                    fn += ((onehot_pred.float() == 0) & (onehot_labels.float() == 1)).sum(dim=0).float()
 
-                msg = "{}/{} {} - ETA : {}" .format(i, num_batches, progress_bar(i, num_batches), eta(start, i, num_batches))
-                print(msg, end="\r")
+                    msg = "Test {}/{} {} - ETA : {}".format(i, num_batches, progress_bar(i, num_batches),
+                                                            eta(start, i, num_batches))
+                    print(msg, end="\r")
+
+
+
+        writer.add_scalar("Test/Total_accuracy", correct_total / data_len, e)
+        writer.add_scalars("Test/By_class_accuracy", summary_map(self.num_to_name, correct / data_len), e)
+        writer.add_scalars("Test/By_class_true_positives", summary_map(self.num_to_name, tp / data_len), e)
+        writer.add_scalars("Test/By_class_false_negatives", summary_map(self.num_to_name, fn / data_len), e)
+        writer.add_scalars("Test/By_class_false_positives", summary_map(self.num_to_name, fp / data_len), e)
+
 
         print(
-            "Accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
+            "Test accuracy total {}, by class {}, tp {}, fp {}, fn {}".format(correct_total / data_len,
                                                                          correct / data_len,
                                                                          tp / data_len, fp / data_len,
                                                                          fn / data_len), end="\n")
-
-
-
-
-

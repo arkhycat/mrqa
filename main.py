@@ -19,8 +19,10 @@ def worker(gpu, ngpus_per_node, args):
         model = BaseTrainer(args)
     model.make_model_env(gpu, ngpus_per_node)
     model.make_run_env()
-    model.train()
-    model.test()
+    if args.only_test:
+        model.test()
+    else:
+        model.train()
 
 
 def main(args):
@@ -109,6 +111,10 @@ if __name__ == "__main__":
     parser.add_argument("--dropout", default=0.1, type=float, help="Dropout for discriminator")
     parser.add_argument("--anneal", action="store_true")
     parser.add_argument("--concat", action="store_true", help="Whether to use both cls and sep embedding")
+
+    parser.add_argument("--train_qa", action='store_false', help="Train QA or just discriminator")
+    parser.add_argument("--train_split", default=0.8, type=float, help="Proportion of each dataset to use for training")
+    parser.add_argument("--only_test", action='store_true', help="Just run the testing phase")
     args = parser.parse_args()
 
     main(args)
