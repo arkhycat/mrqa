@@ -70,7 +70,7 @@ class DomainQA(nn.Module):
 
         elif dtype == "dis":
             assert labels is not None
-            dis_loss, logits = self.forward_discriminator(input_ids, token_type_ids, attention_mask, labels)
+            dis_loss, logits = self.forward_discriminator(input_ids, token_type_ids, attention_mask, labels, start_positions, end_positions)
             return dis_loss, logits
 
         else:
@@ -113,7 +113,7 @@ class DomainQA(nn.Module):
         ignored_index = start_logits.size(1)
         start_positions.clamp_(0, ignored_index)
         end_positions.clamp_(0, ignored_index)
-
+        
         loss_fct = nn.CrossEntropyLoss(ignore_index=ignored_index)
         start_loss = loss_fct(start_logits, start_positions)
         end_loss = loss_fct(end_logits, end_positions)
@@ -121,7 +121,7 @@ class DomainQA(nn.Module):
         total_loss = qa_loss + kld
         return total_loss
 
-    def forward_discriminator(self, input_ids, token_type_ids, attention_mask, labels):
+    def forward_discriminator(self, input_ids, token_type_ids, attention_mask, labels, start_positions, end_positions):
         with torch.no_grad():
             sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
 
@@ -131,7 +131,10 @@ class DomainQA(nn.Module):
                 hidden = torch.cat([cls_embedding, sep_embedding], dim=-1)  # [b, 2*d]
             else:
                 hidden = cls_embedding
-        log_prob = self.discriminator(hidden.detach())
+
+        avq_qa = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions)
+        log_prob = self.discriminator(avq_qa.detach())
+        #log_prob = self.discriminator(hidden.detach())
         #print(pooled_output.shape)
         #print(sequence_output.shape)
         #log_prob = self.discriminator(pooled_output)
@@ -145,3 +148,48 @@ class DomainQA(nn.Module):
         sep_idx = (input_ids == self.sep_id).sum(1)
         sep_embedding = sequence_output[torch.arange(batch_size), sep_idx]
         return sep_embedding
+
+    def get_avg_qa_emb(self, input_ids, sequence_output, start_positions, end_positions):
+        logits = self.qa_outputs(sequence_output)
+        start_logits, end_logits = logits.split(1, dim=-1)
+        start_logits = start_logits.squeeze(-1)
+        end_logits = end_logits.squeeze(-1)
+
+
+
+        answer_phrase_ids = torch.zeros_like(input_ids)
+        answer_phrase_ids = answer_phrase_ids.scatter(-1,start_positions.unsqueeze(-1),1) #1 at start position
+        answer_phrase_ids = answer_phrase_ids.scatter(-1,(end_positions+1).unsqueeze(-1),-1) # -1 at end position
+        answer_phrase_ids = answer_phrase_ids.float().matmul(torch.triu(torch.ones(answer_phrase_ids.size(1), answer_phrase_ids.size(1)) ).to(input_ids.device))
+        # (get 1's at all the postions of the answer)
+        answer_len = (answer_phrase_ids.sum(-1) + 1e-9).unsqueeze(-1) # b x 1
+        answer_phrase_ids = answer_phrase_ids.unsqueeze(1) # b x 1 x seq
+        avg_phrase_emb = answer_phrase_ids.matmul(sequence_output ).squeeze(1)
+        answer = avg_phrase_emb / answer_len # b x 1 x hidden / b x 1
+
+        
+
+
+        '''
+        # If we are on multi-GPU, split add a dimension
+        if len(start_positions.size()) > 1:
+            start_positions = start_positions.squeeze(-1)
+        if len(end_positions.size()) > 1:
+            end_positions = end_positions.squeeze(-1)
+        # sometimes the start/end positions are outside our model inputs, we ignore these terms
+        ignored_index = start_logits.size(1)
+        #start_positions.clamp_(0, ignored_index)
+        #end_positions.clamp_(0, ignored_index)
+        #print(start_positions, end_positions)
+        #print(start_positions.shape, end_positions.shape)
+
+        print(sequence_output.shape)
+        answer = torch.zeros((sequence_output.shape[0], sequence_output.shape[2]))
+        for i in range(sequence_output.shape[0]):
+            for start, end in list(zip(start_positions[i], end_positions[i])):
+                if start > 0 and end > 0:
+                    answer[i] += sequence_output[:, start:end+1]/(end-start+1)  # this will have size b x (1) x hidden_size
+        '''
+
+
+        return answer
