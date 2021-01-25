@@ -26,6 +26,8 @@ class DomainDiscriminator(nn.Module):
     def forward(self, x):
         # forward pass
         for i in range(self.num_layers - 1):
+            #import pdb;
+            #pdb.set_trace()
             x = self.hidden_layers[i](x)
         logits = self.hidden_layers[-1](x)
         log_prob = F.log_softmax(logits, dim=1)
@@ -51,7 +53,7 @@ class DomainQA(nn.Module):
             input_size = 2 * hidden_size
         else:
             input_size = hidden_size
-        self.discriminator = DomainDiscriminator(num_classes, input_size, hidden_size, num_layers, dropout)
+        self.discriminator = DomainDiscriminator(num_classes, input_size*2, hidden_size, num_layers, dropout)
 
         self.num_classes = num_classes
         self.dis_lambda = dis_lambda
@@ -90,7 +92,9 @@ class DomainQA(nn.Module):
             hidden = torch.cat([cls_embedding, sep_embedding], dim=1)
         else:
             hidden = sequence_output[:, 0]  # [b, d] : [CLS] representation
-        log_prob = self.discriminator(hidden)
+        q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
+        log_prob = self.discriminator(torch.cat((a, q), 1))
+
         targets = torch.ones_like(log_prob) * (1 / self.num_classes)
         # As with NLLLoss, the input given is expected to contain log-probabilities
         # and is not restricted to a 2D Tensor. The targets are given as probabilities
@@ -121,7 +125,7 @@ class DomainQA(nn.Module):
         total_loss = qa_loss + kld
         return total_loss
 
-    def forward_discriminator(self, input_ids, token_type_ids, attention_mask, labels, start_positions, end_positions):
+    def forward_discriminator(self, input_ids, token_type_ids, attention_mask, labels, start_positions, end_positions,):
         with torch.no_grad():
             sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
 
@@ -132,8 +136,10 @@ class DomainQA(nn.Module):
             else:
                 hidden = cls_embedding
 
-        avq_qa = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions)
-        log_prob = self.discriminator(avq_qa.detach())
+        q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
+        #import pdb;
+        #pdb.set_trace()
+        log_prob = self.discriminator(torch.cat((a, q), 1))
         #log_prob = self.discriminator(hidden.detach())
         #print(pooled_output.shape)
         #print(sequence_output.shape)
@@ -149,14 +155,7 @@ class DomainQA(nn.Module):
         sep_embedding = sequence_output[torch.arange(batch_size), sep_idx]
         return sep_embedding
 
-    def get_avg_qa_emb(self, input_ids, sequence_output, start_positions, end_positions):
-        logits = self.qa_outputs(sequence_output)
-        start_logits, end_logits = logits.split(1, dim=-1)
-        start_logits = start_logits.squeeze(-1)
-        end_logits = end_logits.squeeze(-1)
-
-
-
+    def get_avg_qa_emb(self, input_ids, sequence_output, start_positions, end_positions, token_type_ids):
         answer_phrase_ids = torch.zeros_like(input_ids)
         answer_phrase_ids = answer_phrase_ids.scatter(-1,start_positions.unsqueeze(-1),1) #1 at start position
         answer_phrase_ids = answer_phrase_ids.scatter(-1,(end_positions+1).unsqueeze(-1),-1) # -1 at end position
@@ -164,32 +163,13 @@ class DomainQA(nn.Module):
         # (get 1's at all the postions of the answer)
         answer_len = (answer_phrase_ids.sum(-1) + 1e-9).unsqueeze(-1) # b x 1
         answer_phrase_ids = answer_phrase_ids.unsqueeze(1) # b x 1 x seq
+        answer_phrase_ids = answer_phrase_ids.unsqueeze(1) # b x 1 x seq
         avg_phrase_emb = answer_phrase_ids.matmul(sequence_output ).squeeze(1)
         answer = avg_phrase_emb / answer_len # b x 1 x hidden / b x 1
 
-        
+        question_mask = (1 - token_type_ids).unsqueeze(-1).float()
+        question_len = question_mask.sum((-2, -1))
+        question = question_mask.mul(sequence_output).sum(-2)
+        question /= question_len.unsqueeze(-1)
 
-
-        '''
-        # If we are on multi-GPU, split add a dimension
-        if len(start_positions.size()) > 1:
-            start_positions = start_positions.squeeze(-1)
-        if len(end_positions.size()) > 1:
-            end_positions = end_positions.squeeze(-1)
-        # sometimes the start/end positions are outside our model inputs, we ignore these terms
-        ignored_index = start_logits.size(1)
-        #start_positions.clamp_(0, ignored_index)
-        #end_positions.clamp_(0, ignored_index)
-        #print(start_positions, end_positions)
-        #print(start_positions.shape, end_positions.shape)
-
-        print(sequence_output.shape)
-        answer = torch.zeros((sequence_output.shape[0], sequence_output.shape[2]))
-        for i in range(sequence_output.shape[0]):
-            for start, end in list(zip(start_positions[i], end_positions[i])):
-                if start > 0 and end > 0:
-                    answer[i] += sequence_output[:, start:end+1]/(end-start+1)  # this will have size b x (1) x hidden_size
-        '''
-
-
-        return answer
+        return question, answer
