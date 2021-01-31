@@ -5,6 +5,17 @@ from pytorch_pretrained_bert import BertModel, BertConfig
 from utils import kl_coef
 
 
+def wasserstein_dist(tensor_a, tensor_b):
+    tensor_a = tensor_a / (torch.sum(tensor_a, dim=-1, keepdim=True) + 1e-14)
+    tensor_b = tensor_b / (torch.sum(tensor_b, dim=-1, keepdim=True) + 1e-14)
+    # make cdf with cumsum
+    cdf_tensor_a = torch.cumsum(tensor_a,dim=-1)
+    cdf_tensor_b = torch.cumsum(tensor_b,dim=-1)
+
+    cdf_distance = torch.sum(torch.abs((cdf_tensor_a-cdf_tensor_b)),dim=-1)
+    cdf_loss = cdf_distance.mean()
+    return cdf_loss
+
 class DomainDiscriminator(nn.Module):
     def __init__(self, num_classes=6, input_size=768 * 2,
                  hidden_size=768, num_layers=3, dropout=0.1):
@@ -53,7 +64,7 @@ class DomainQA(nn.Module):
             input_size = 2 * hidden_size
         else:
             input_size = hidden_size
-        self.discriminator = DomainDiscriminator(num_classes, input_size*2, hidden_size, num_layers, dropout)
+        self.discriminator = DomainDiscriminator(num_classes, input_size, hidden_size, num_layers, dropout)
 
         self.num_classes = num_classes
         self.dis_lambda = dis_lambda
@@ -92,16 +103,19 @@ class DomainQA(nn.Module):
             hidden = torch.cat([cls_embedding, sep_embedding], dim=1)
         else:
             hidden = sequence_output[:, 0]  # [b, d] : [CLS] representation
-        q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
-        log_prob = self.discriminator(torch.cat((a, q), 1))
+        #import pdb;
+        #pdb.set_trace()
+        #q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
+        #log_prob = self.discriminator(torch.cat((a, q), 1))
 
+        log_prob = self.discriminator(hidden.detach())
         targets = torch.ones_like(log_prob) * (1 / self.num_classes)
         # As with NLLLoss, the input given is expected to contain log-probabilities
         # and is not restricted to a 2D Tensor. The targets are given as probabilities
-        kl_criterion = nn.KLDivLoss(reduction="batchmean")
+        criterion = wasserstein_dist #nn.KLDivLoss(reduction="batchmean")
         if self.anneal:
             self.dis_lambda = self.dis_lambda * kl_coef(global_step)
-        kld = self.dis_lambda * kl_criterion(log_prob, targets)
+        kld = self.dis_lambda * criterion(log_prob, targets)
 
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
@@ -136,16 +150,20 @@ class DomainQA(nn.Module):
             else:
                 hidden = cls_embedding
 
-        q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
+        #q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
         #import pdb;
         #pdb.set_trace()
-        log_prob = self.discriminator(torch.cat((a, q), 1))
-        #log_prob = self.discriminator(hidden.detach())
+        #log_prob = self.discriminator(torch.cat((a, q), 1))
+        log_prob = self.discriminator(hidden.detach())
         #print(pooled_output.shape)
         #print(sequence_output.shape)
         #log_prob = self.discriminator(pooled_output)
-        criterion = nn.NLLLoss()
-        loss = criterion(log_prob, labels)
+        #criterion = nn.NLLLoss()
+        #loss = criterion(log_prob, labels)
+        onehot = torch.FloatTensor(log_prob.shape).to(log_prob.device)
+        onehot.zero_()
+        onehot.scatter_(1, labels.view(-1, 1), 1)
+        loss = wasserstein_dist(log_prob, onehot)
 
         return loss, log_prob
 
@@ -156,16 +174,25 @@ class DomainQA(nn.Module):
         return sep_embedding
 
     def get_avg_qa_emb(self, input_ids, sequence_output, start_positions, end_positions, token_type_ids):
+        #import pdb;
+        #pdb.set_trace()
         answer_phrase_ids = torch.zeros_like(input_ids)
+        #print(answer_phrase_ids.shape)
         answer_phrase_ids = answer_phrase_ids.scatter(-1,start_positions.unsqueeze(-1),1) #1 at start position
+        #print(answer_phrase_ids.shape)
         answer_phrase_ids = answer_phrase_ids.scatter(-1,(end_positions+1).unsqueeze(-1),-1) # -1 at end position
+        #print(answer_phrase_ids.shape)
         answer_phrase_ids = answer_phrase_ids.float().matmul(torch.triu(torch.ones(answer_phrase_ids.size(1), answer_phrase_ids.size(1)) ).to(input_ids.device))
+        #print(answer_phrase_ids.shape)
         # (get 1's at all the postions of the answer)
         answer_len = (answer_phrase_ids.sum(-1) + 1e-9).unsqueeze(-1) # b x 1
+        #print(answer_len.shape)
         answer_phrase_ids = answer_phrase_ids.unsqueeze(1) # b x 1 x seq
-        answer_phrase_ids = answer_phrase_ids.unsqueeze(1) # b x 1 x seq
+        #print(answer_phrase_ids.shape)
         avg_phrase_emb = answer_phrase_ids.matmul(sequence_output ).squeeze(1)
+        #print(avg_phrase_emb.shape)
         answer = avg_phrase_emb / answer_len # b x 1 x hidden / b x 1
+        #print(answer.shape)
 
         question_mask = (1 - token_type_ids).unsqueeze(-1).float()
         question_len = question_mask.sum((-2, -1))
