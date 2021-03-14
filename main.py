@@ -101,7 +101,7 @@ if __name__ == "__main__":
     parser.add_argument("--dist_url", default="tcp://127.0.0.1:9999", help="DistributedDataParallel server")
     parser.add_argument("--gpu", default=None, help="Manual setting of gpu device. If it is not None, all parallel processes are disabled")
     parser.add_argument("--distributed", action="store_true", help="Use multiprocess distribution or not")
-    parser.add_argument("--random_seed", default=2019, help="Random state(seed)")
+    parser.add_argument("--random_seed", help="Random state(seed)") # default=2019
 
     # For adversarial learning
     parser.add_argument("--adv", action="store_true", help="Use adversarial training")
@@ -115,6 +115,9 @@ if __name__ == "__main__":
     parser.add_argument("--train_qa", action='store_false', help="Train QA or just discriminator")
     parser.add_argument("--train_split", default=0.8, type=float, help="Proportion of each dataset to use for training")
     parser.add_argument("--only_test", action='store_true', help="Just run the testing phase")
+    parser.add_argument("--do_test_every", default=0, help="Run on the held out set after every n steps")
+    parser.add_argument("--qa_emb", choices=['qa', 'cls', 'pool'], help="What embeddings are used for the discriminator")
+    parser.add_argument("--loss", choices=['ce', 'wass'], help="Loss function for the discriminator")
     args = parser.parse_args()
 
     main(args)

@@ -72,6 +72,7 @@ class BaseTrainer(object):
         train_split = args.train_split
         self.train_features_lst = [ftrs[:int(train_split*(len(ftrs)))] for ftrs in self.features_lst]
         self.test_features_lst = [ftrs[int(train_split*(len(ftrs))):] for ftrs in self.features_lst]
+        self.do_test_every = args.do_test_every
 
     def make_model_env(self, gpu, ngpus_per_node):
         if self.args.distributed:
@@ -369,7 +370,8 @@ class AdvTrainer(BaseTrainer):
         self.model = DomainQA(self.args.bert_model, self.args.num_classes,
                               self.args.hidden_size, self.args.num_layers,
                               self.args.dropout, self.args.dis_lambda,
-                              self.args.concat, self.args.anneal)
+                              self.args.concat, self.args.anneal,
+                              self.args.loss, self.args.qa_emb)
 
         if self.args.load_model is not None:
             print("Loading model from ", self.args.load_model)
@@ -466,11 +468,14 @@ class AdvTrainer(BaseTrainer):
                     self.dis_optimizer.step()
                     self.dis_optimizer.zero_grad()
                     step += 1
+
+                    if self.do_test_every > 0 and i%self.do_test_every == 0:
+                        self.test(step)
+
                     if i % 2000 == 0:
                         result_dict = self.evaluate_model(i)
                         for dev_file, f1 in result_dict.items():
                             print("GPU/CPU {} evaluated {}: {:.2f}".format(self.args.gpu, dev_file, f1), end="\n")
-                        self.test(step)
 
                         writer.add_scalar("Train/Total_accuracy", correct_total / data_len, i)
                         writer.add_scalars("Train/By_class_accuracy", summary_map(self.num_to_name, correct / data_len),

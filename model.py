@@ -37,8 +37,6 @@ class DomainDiscriminator(nn.Module):
     def forward(self, x):
         # forward pass
         for i in range(self.num_layers - 1):
-            #import pdb;
-            #pdb.set_trace()
             x = self.hidden_layers[i](x)
         logits = self.hidden_layers[-1](x)
         log_prob = F.log_softmax(logits, dim=1)
@@ -47,7 +45,7 @@ class DomainDiscriminator(nn.Module):
 
 class DomainQA(nn.Module):
     def __init__(self, bert_name_or_config, num_classes=6, hidden_size=768,
-                 num_layers=3, dropout=0.1, dis_lambda=0.5, concat=False, anneal=False):
+                 num_layers=3, dropout=0.1, dis_lambda=0.5, concat=False, anneal=False, loss='ce', emb_disc='cls'):
         super(DomainQA, self).__init__()
         if isinstance(bert_name_or_config, BertConfig):
             self.bert = BertModel(bert_name_or_config)
@@ -60,7 +58,7 @@ class DomainQA(nn.Module):
         # init weight
         self.qa_outputs.weight.data.normal_(mean=0.0, std=0.02)
         self.qa_outputs.bias.data.zero_()
-        if concat:
+        if concat or emb_disc == 'qa':
             input_size = 2 * hidden_size
         else:
             input_size = hidden_size
@@ -71,6 +69,8 @@ class DomainQA(nn.Module):
         self.anneal = anneal
         self.concat = concat
         self.sep_id = 102
+        self.disc_loss = loss
+        self.emb_disc = emb_disc
 
     # only for prediction
     def forward(self, input_ids, token_type_ids, attention_mask,
@@ -96,23 +96,30 @@ class DomainQA(nn.Module):
             return start_logits, end_logits
 
     def forward_qa(self, input_ids, token_type_ids, attention_mask, start_positions, end_positions, global_step):
-        sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
-        cls_embedding = sequence_output[:, 0]
-        if self.concat:
-            sep_embedding = self.get_sep_embedding(input_ids, sequence_output)
-            hidden = torch.cat([cls_embedding, sep_embedding], dim=1)
-        else:
-            hidden = sequence_output[:, 0]  # [b, d] : [CLS] representation
-        #import pdb;
-        #pdb.set_trace()
-        #q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
-        #log_prob = self.discriminator(torch.cat((a, q), 1))
+        sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
 
-        log_prob = self.discriminator(hidden.detach())
+        log_prob = None
+        if self.emb_disc == 'qa':
+            q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
+            log_prob = self.discriminator(torch.cat((a, q), 1))
+        elif self.emb_disc == 'pool':
+            log_prob = self.discriminator(pooled_output)
+        elif self.emb_disc == 'cls':
+            cls_embedding = sequence_output[:, 0]
+            if self.concat:
+                sep_embedding = self.get_sep_embedding(input_ids, sequence_output)
+                hidden = torch.cat([cls_embedding, sep_embedding], dim=1)
+            else:
+                hidden = sequence_output[:, 0]  # [b, d] : [CLS] representation
+            log_prob = self.discriminator(hidden.detach())
+
+        criterion = None
+        if self.disc_loss == 'wass':
+            criterion = wasserstein_dist
+        elif self.disc_loss == 'ce':
+            criterion = nn.KLDivLoss(reduction="batchmean")
+
         targets = torch.ones_like(log_prob) * (1 / self.num_classes)
-        # As with NLLLoss, the input given is expected to contain log-probabilities
-        # and is not restricted to a 2D Tensor. The targets are given as probabilities
-        criterion = wasserstein_dist #nn.KLDivLoss(reduction="batchmean")
         if self.anneal:
             self.dis_lambda = self.dis_lambda * kl_coef(global_step)
         kld = self.dis_lambda * criterion(log_prob, targets)
@@ -139,31 +146,33 @@ class DomainQA(nn.Module):
         total_loss = qa_loss + kld
         return total_loss
 
-    def forward_discriminator(self, input_ids, token_type_ids, attention_mask, labels, start_positions, end_positions,):
+    def forward_discriminator(self, input_ids, token_type_ids, attention_mask, labels, start_positions, end_positions):
         with torch.no_grad():
             sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
 
+        log_prob = None
+        if self.emb_disc == 'qa':
+            q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
+            log_prob = self.discriminator(torch.cat((a, q), 1))
+        elif self.emb_disc == 'pool':
+            log_prob = self.discriminator(pooled_output)
+        elif self.emb_disc == 'cls':
             cls_embedding = sequence_output[:, 0]  # [b, d] : [CLS] representation
             if self.concat:
                 sep_embedding = self.get_sep_embedding(input_ids, sequence_output)
                 hidden = torch.cat([cls_embedding, sep_embedding], dim=-1)  # [b, 2*d]
             else:
                 hidden = cls_embedding
+            log_prob = self.discriminator(hidden.detach())
 
-        #q, a = self.get_avg_qa_emb(input_ids, sequence_output, start_positions, end_positions, token_type_ids)
-        #import pdb;
-        #pdb.set_trace()
-        #log_prob = self.discriminator(torch.cat((a, q), 1))
-        log_prob = self.discriminator(hidden.detach())
-        #print(pooled_output.shape)
-        #print(sequence_output.shape)
-        #log_prob = self.discriminator(pooled_output)
-        #criterion = nn.NLLLoss()
-        #loss = criterion(log_prob, labels)
-        onehot = torch.FloatTensor(log_prob.shape).to(log_prob.device)
-        onehot.zero_()
-        onehot.scatter_(1, labels.view(-1, 1), 1)
-        loss = wasserstein_dist(log_prob, onehot)
+        if self.disc_loss == 'ce':
+            criterion = nn.NLLLoss()
+            loss = criterion(log_prob, labels)
+        if self.disc_loss == 'wass':
+            onehot = torch.FloatTensor(log_prob.shape).to(log_prob.device)
+            onehot.zero_()
+            onehot.scatter_(1, labels.view(-1, 1), 1)
+            loss = wasserstein_dist(log_prob, onehot)
 
         return loss, log_prob
 
@@ -174,25 +183,15 @@ class DomainQA(nn.Module):
         return sep_embedding
 
     def get_avg_qa_emb(self, input_ids, sequence_output, start_positions, end_positions, token_type_ids):
-        #import pdb;
-        #pdb.set_trace()
         answer_phrase_ids = torch.zeros_like(input_ids)
-        #print(answer_phrase_ids.shape)
         answer_phrase_ids = answer_phrase_ids.scatter(-1,start_positions.unsqueeze(-1),1) #1 at start position
-        #print(answer_phrase_ids.shape)
         answer_phrase_ids = answer_phrase_ids.scatter(-1,(end_positions+1).unsqueeze(-1),-1) # -1 at end position
-        #print(answer_phrase_ids.shape)
         answer_phrase_ids = answer_phrase_ids.float().matmul(torch.triu(torch.ones(answer_phrase_ids.size(1), answer_phrase_ids.size(1)) ).to(input_ids.device))
-        #print(answer_phrase_ids.shape)
         # (get 1's at all the postions of the answer)
         answer_len = (answer_phrase_ids.sum(-1) + 1e-9).unsqueeze(-1) # b x 1
-        #print(answer_len.shape)
         answer_phrase_ids = answer_phrase_ids.unsqueeze(1) # b x 1 x seq
-        #print(answer_phrase_ids.shape)
         avg_phrase_emb = answer_phrase_ids.matmul(sequence_output ).squeeze(1)
-        #print(avg_phrase_emb.shape)
         answer = avg_phrase_emb / answer_len # b x 1 x hidden / b x 1
-        #print(answer.shape)
 
         question_mask = (1 - token_type_ids).unsqueeze(-1).float()
         question_len = question_mask.sum((-2, -1))
